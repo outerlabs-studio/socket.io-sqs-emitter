@@ -12,7 +12,7 @@ jobs:
 
     strategy:
       matrix:
-        node-version: [12.x, 16.x]
+        node-version: [16.x, 20.x]
 
     steps:
       - uses: actions/checkout@v2
@@ -22,8 +22,5 @@ jobs:
           node-version: ${{ matrix.node-version }}
       - name: Start LocalStack
         uses: LocalStack/setup-localstack@v0.2.0
-        with:
-          image-tag: 'latest'
-          install-awslocal: 'true'
       - run: npm run format:check
       - run: npm run test
