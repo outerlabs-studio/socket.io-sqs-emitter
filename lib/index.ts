@@ -1,13 +1,19 @@
-import { PacketType } from "socket.io-parser";
-import msgpack = require("notepack.io");
+import { MessageType } from "socket.io-adapter";
 import debugModule from "debug";
 import type {
   DefaultEventsMap,
   EventNames,
   EventParams,
   EventsMap,
-  TypedEventBroadcaster,
 } from "./typed-events";
+import {
+  MessageAttributeValue,
+  PublishCommand,
+  SNS,
+  SNSClient,
+} from "@aws-sdk/client-sns";
+import { encode } from "notepack.io";
+import { PacketType } from "socket.io-parser";
 
 const debug = debugModule("socket.io-emitter");
 
@@ -27,27 +33,16 @@ enum RequestType {
   SERVER_SIDE_EMIT = 6,
 }
 
-interface Parser {
-  encode: (msg: any) => any;
-}
-
 export interface EmitterOptions {
   /**
    * @default "socket.io"
    */
-  key?: string;
-  /**
-   * The parser to use for encoding messages sent to Redis.
-   * Defaults to notepack.io, a MessagePack implementation.
-   */
-  parser?: Parser;
+  topicName?: string;
 }
 
 interface BroadcastOptions {
   nsp: string;
-  broadcastChannel: string;
-  requestChannel: string;
-  parser: Parser;
+  topicArn: string;
 }
 
 interface BroadcastFlags {
@@ -55,27 +50,67 @@ interface BroadcastFlags {
   compress?: boolean;
 }
 
+async function publish(
+  client: SNSClient,
+  topic: string,
+  type: number,
+  nsp: string | undefined,
+  uid: string | undefined,
+  data?: any
+) {
+  try {
+    const messageAttributes: Record<string, MessageAttributeValue> = {};
+    if (nsp) {
+      messageAttributes.nsp = {
+        DataType: "String",
+        StringValue: nsp,
+      };
+    }
+
+    if (UID) {
+      messageAttributes.uid = {
+        DataType: "String",
+        StringValue: UID,
+      };
+    }
+
+    if (data) {
+      // no binary can be included in the body, so we include it in a message attribute
+      messageAttributes.data = {
+        DataType: "Binary",
+        BinaryValue: encode(data),
+      };
+    }
+
+    return client
+      .send(
+        new PublishCommand({
+          TopicArn: topic,
+          Message: String(type),
+          MessageAttributes: messageAttributes,
+        })
+      )
+      .then(() => {
+        debug("published message %d to SNS topic %s", type, topic);
+      })
+      .catch(console.log);
+  } catch (e) {
+    console.log(e);
+  }
+}
+
 export class Emitter<EmitEvents extends EventsMap = DefaultEventsMap> {
   private readonly opts: EmitterOptions;
   private readonly broadcastOptions: BroadcastOptions;
 
   constructor(
-    readonly redisClient: any,
-    opts?: EmitterOptions,
+    readonly snsClient: SNS,
+    readonly topicArn: string,
     readonly nsp: string = "/"
   ) {
-    this.opts = Object.assign(
-      {
-        key: "socket.io",
-        parser: msgpack,
-      },
-      opts
-    );
     this.broadcastOptions = {
       nsp,
-      broadcastChannel: this.opts.key + "#" + nsp + "#",
-      requestChannel: this.opts.key + "-request#" + nsp + "#",
-      parser: this.opts.parser,
+      topicArn,
     };
   }
 
@@ -87,8 +122,8 @@ export class Emitter<EmitEvents extends EventsMap = DefaultEventsMap> {
    */
   public of(nsp: string): Emitter<EmitEvents> {
     return new Emitter(
-      this.redisClient,
-      this.opts,
+      this.snsClient,
+      this.topicArn,
       (nsp[0] !== "/" ? "/" : "") + nsp
     );
   }
@@ -99,12 +134,12 @@ export class Emitter<EmitEvents extends EventsMap = DefaultEventsMap> {
    * @return Always true
    * @public
    */
-  public emit<Ev extends EventNames<EmitEvents>>(
+  public async emit<Ev extends EventNames<EmitEvents>>(
     ev: Ev,
     ...args: EventParams<EmitEvents, Ev>
-  ): true {
+  ): Promise<true> {
     return new BroadcastOperator<EmitEvents>(
-      this.redisClient,
+      this.snsClient,
       this.broadcastOptions
     ).emit(ev, ...args);
   }
@@ -117,7 +152,7 @@ export class Emitter<EmitEvents extends EventsMap = DefaultEventsMap> {
    * @public
    */
   public to(room: string | string[]): BroadcastOperator<EmitEvents> {
-    return new BroadcastOperator(this.redisClient, this.broadcastOptions).to(
+    return new BroadcastOperator(this.snsClient, this.broadcastOptions).to(
       room
     );
   }
@@ -130,7 +165,7 @@ export class Emitter<EmitEvents extends EventsMap = DefaultEventsMap> {
    * @public
    */
   public in(room: string | string[]): BroadcastOperator<EmitEvents> {
-    return new BroadcastOperator(this.redisClient, this.broadcastOptions).in(
+    return new BroadcastOperator(this.snsClient, this.broadcastOptions).in(
       room
     );
   }
@@ -143,10 +178,9 @@ export class Emitter<EmitEvents extends EventsMap = DefaultEventsMap> {
    * @public
    */
   public except(room: string | string[]): BroadcastOperator<EmitEvents> {
-    return new BroadcastOperator(
-      this.redisClient,
-      this.broadcastOptions
-    ).except(room);
+    return new BroadcastOperator(this.snsClient, this.broadcastOptions).except(
+      room
+    );
   }
 
   /**
@@ -158,7 +192,7 @@ export class Emitter<EmitEvents extends EventsMap = DefaultEventsMap> {
    * @public
    */
   public get volatile(): BroadcastOperator<EmitEvents> {
-    return new BroadcastOperator(this.redisClient, this.broadcastOptions)
+    return new BroadcastOperator(this.snsClient, this.broadcastOptions)
       .volatile;
   }
 
@@ -171,7 +205,7 @@ export class Emitter<EmitEvents extends EventsMap = DefaultEventsMap> {
    */
   public compress(compress: boolean): BroadcastOperator<EmitEvents> {
     return new BroadcastOperator(
-      this.redisClient,
+      this.snsClient,
       this.broadcastOptions
     ).compress(compress);
   }
@@ -182,9 +216,9 @@ export class Emitter<EmitEvents extends EventsMap = DefaultEventsMap> {
    * @param rooms
    * @public
    */
-  public socketsJoin(rooms: string | string[]): void {
+  public async socketsJoin(rooms: string | string[]): Promise<void> {
     return new BroadcastOperator(
-      this.redisClient,
+      this.snsClient,
       this.broadcastOptions
     ).socketsJoin(rooms);
   }
@@ -195,9 +229,9 @@ export class Emitter<EmitEvents extends EventsMap = DefaultEventsMap> {
    * @param rooms
    * @public
    */
-  public socketsLeave(rooms: string | string[]): void {
+  public async socketsLeave(rooms: string | string[]): Promise<void> {
     return new BroadcastOperator(
-      this.redisClient,
+      this.snsClient,
       this.broadcastOptions
     ).socketsLeave(rooms);
   }
@@ -208,9 +242,9 @@ export class Emitter<EmitEvents extends EventsMap = DefaultEventsMap> {
    * @param close - whether to close the underlying connection
    * @public
    */
-  public disconnectSockets(close: boolean = false): void {
+  public async disconnectSockets(close: boolean = false): Promise<void> {
     return new BroadcastOperator(
-      this.redisClient,
+      this.snsClient,
       this.broadcastOptions
     ).disconnectSockets(close);
   }
@@ -220,20 +254,23 @@ export class Emitter<EmitEvents extends EventsMap = DefaultEventsMap> {
    *
    * @param args - any number of serializable arguments
    */
-  public serverSideEmit(...args: any[]): void {
+  public async serverSideEmit(...args: any[]): Promise<void> {
     const withAck = typeof args[args.length - 1] === "function";
 
     if (withAck) {
       throw new Error("Acknowledgements are not supported");
     }
 
-    const request = JSON.stringify({
-      uid: UID,
-      type: RequestType.SERVER_SIDE_EMIT,
-      data: args,
-    });
-
-    this.redisClient.publish(this.broadcastOptions.requestChannel, request);
+    await publish(
+      this.snsClient,
+      this.broadcastOptions.topicArn,
+      MessageType.SERVER_SIDE_EMIT,
+      this.broadcastOptions.nsp,
+      UID,
+      {
+        packet: args,
+      }
+    );
   }
 }
 
@@ -246,10 +283,9 @@ export const RESERVED_EVENTS: ReadonlySet<string | Symbol> = new Set(<const>[
   "removeListener",
 ]);
 
-export class BroadcastOperator<EmitEvents extends EventsMap>
-  implements TypedEventBroadcaster<EmitEvents> {
+export class BroadcastOperator<EmitEvents extends EventsMap> {
   constructor(
-    private readonly redisClient: any,
+    private readonly snsClient: SNS,
     private readonly broadcastOptions: BroadcastOptions,
     private readonly rooms: Set<string> = new Set<string>(),
     private readonly exceptRooms: Set<string> = new Set<string>(),
@@ -270,8 +306,9 @@ export class BroadcastOperator<EmitEvents extends EventsMap>
     } else {
       rooms.add(room);
     }
+
     return new BroadcastOperator(
-      this.redisClient,
+      this.snsClient,
       this.broadcastOptions,
       rooms,
       this.exceptRooms,
@@ -305,7 +342,7 @@ export class BroadcastOperator<EmitEvents extends EventsMap>
       exceptRooms.add(room);
     }
     return new BroadcastOperator(
-      this.redisClient,
+      this.snsClient,
       this.broadcastOptions,
       this.rooms,
       exceptRooms,
@@ -323,7 +360,7 @@ export class BroadcastOperator<EmitEvents extends EventsMap>
   public compress(compress: boolean): BroadcastOperator<EmitEvents> {
     const flags = Object.assign({}, this.flags, { compress });
     return new BroadcastOperator(
-      this.redisClient,
+      this.snsClient,
       this.broadcastOptions,
       this.rooms,
       this.exceptRooms,
@@ -342,7 +379,7 @@ export class BroadcastOperator<EmitEvents extends EventsMap>
   public get volatile(): BroadcastOperator<EmitEvents> {
     const flags = Object.assign({}, this.flags, { volatile: true });
     return new BroadcastOperator(
-      this.redisClient,
+      this.snsClient,
       this.broadcastOptions,
       this.rooms,
       this.exceptRooms,
@@ -356,12 +393,12 @@ export class BroadcastOperator<EmitEvents extends EventsMap>
    * @return Always true
    * @public
    */
-  public emit<Ev extends EventNames<EmitEvents>>(
+  public async emit<Ev extends EventNames<EmitEvents>>(
     ev: Ev,
     ...args: EventParams<EmitEvents, Ev>
-  ): true {
+  ): Promise<true> {
     if (RESERVED_EVENTS.has(ev)) {
-      throw new Error(`"${ev}" is a reserved event name`);
+      throw new Error(`"${String(ev)}" is a reserved event name`);
     }
 
     // set up packet object
@@ -378,15 +415,17 @@ export class BroadcastOperator<EmitEvents extends EventsMap>
       except: [...this.exceptRooms],
     };
 
-    const msg = this.broadcastOptions.parser.encode([UID, packet, opts]);
-    let channel = this.broadcastOptions.broadcastChannel;
-    if (this.rooms && this.rooms.size === 1) {
-      channel += this.rooms.keys().next().value + "#";
-    }
-
-    debug("publishing message to channel %s", channel);
-
-    this.redisClient.publish(channel, msg);
+    await publish(
+      this.snsClient,
+      this.broadcastOptions.topicArn,
+      MessageType.BROADCAST,
+      this.broadcastOptions.nsp,
+      UID,
+      {
+        packet,
+        opts,
+      }
+    );
 
     return true;
   }
@@ -397,17 +436,21 @@ export class BroadcastOperator<EmitEvents extends EventsMap>
    * @param rooms
    * @public
    */
-  public socketsJoin(rooms: string | string[]): void {
-    const request = JSON.stringify({
-      type: RequestType.REMOTE_JOIN,
-      opts: {
-        rooms: [...this.rooms],
-        except: [...this.exceptRooms],
-      },
-      rooms: Array.isArray(rooms) ? rooms : [rooms],
-    });
-
-    this.redisClient.publish(this.broadcastOptions.requestChannel, request);
+  public async socketsJoin(rooms: string | string[]): Promise<void> {
+    await publish(
+      this.snsClient,
+      this.broadcastOptions.topicArn,
+      MessageType.SOCKETS_JOIN,
+      this.broadcastOptions.nsp,
+      UID,
+      {
+        opts: {
+          rooms: [...this.rooms],
+          except: [...this.exceptRooms],
+        },
+        rooms: Array.isArray(rooms) ? rooms : [rooms],
+      }
+    );
   }
 
   /**
@@ -416,17 +459,21 @@ export class BroadcastOperator<EmitEvents extends EventsMap>
    * @param rooms
    * @public
    */
-  public socketsLeave(rooms: string | string[]): void {
-    const request = JSON.stringify({
-      type: RequestType.REMOTE_LEAVE,
-      opts: {
-        rooms: [...this.rooms],
-        except: [...this.exceptRooms],
-      },
-      rooms: Array.isArray(rooms) ? rooms : [rooms],
-    });
-
-    this.redisClient.publish(this.broadcastOptions.requestChannel, request);
+  public async socketsLeave(rooms: string | string[]): Promise<void> {
+    await publish(
+      this.snsClient,
+      this.broadcastOptions.topicArn,
+      MessageType.SOCKETS_LEAVE,
+      this.broadcastOptions.nsp,
+      UID,
+      {
+        opts: {
+          rooms: [...this.rooms],
+          except: [...this.exceptRooms],
+        },
+        rooms: Array.isArray(rooms) ? rooms : [rooms],
+      }
+    );
   }
 
   /**
@@ -435,16 +482,20 @@ export class BroadcastOperator<EmitEvents extends EventsMap>
    * @param close - whether to close the underlying connection
    * @public
    */
-  public disconnectSockets(close: boolean = false): void {
-    const request = JSON.stringify({
-      type: RequestType.REMOTE_DISCONNECT,
-      opts: {
-        rooms: [...this.rooms],
-        except: [...this.exceptRooms],
-      },
-      close,
-    });
-
-    this.redisClient.publish(this.broadcastOptions.requestChannel, request);
+  public async disconnectSockets(close: boolean = false): Promise<void> {
+    await publish(
+      this.snsClient,
+      this.broadcastOptions.topicArn,
+      MessageType.DISCONNECT_SOCKETS,
+      this.broadcastOptions.nsp,
+      UID,
+      {
+        opts: {
+          rooms: [...this.rooms],
+          except: [...this.exceptRooms],
+        },
+        close,
+      }
+    );
   }
 }

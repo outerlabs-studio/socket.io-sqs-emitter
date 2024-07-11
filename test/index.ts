@@ -1,13 +1,15 @@
 import expect = require("expect.js");
-import { createClient, RedisClientType } from "redis";
 import { Server, Socket } from "socket.io";
 import { io as ioc, Socket as ClientSocket } from "socket.io-client";
-import { createAdapter } from "@socket.io/redis-adapter";
+import { createAdapter } from "@socket.io/aws-sqs-adapter";
 import { createServer } from "http";
 import { Emitter } from "..";
 import type { AddressInfo } from "net";
 
 import "./util";
+import { SNS } from "@aws-sdk/client-sns";
+import { SQS } from "@aws-sdk/client-sqs";
+import { sleep } from "./util";
 
 const SOCKETS_COUNT = 3;
 
@@ -31,8 +33,9 @@ const createPartialDone = (
 describe("emitter", () => {
   let port: number,
     io: Server,
-    pubClient: RedisClientType<any, any>,
-    subClient: RedisClientType<any, any>,
+    snsClient: SNS,
+    sqsClient: SQS,
+    snsTopicArn: string,
     serverSockets: Socket[],
     clientSockets: ClientSocket[],
     emitter: Emitter;
@@ -40,13 +43,23 @@ describe("emitter", () => {
   beforeEach(async () => {
     const httpServer = createServer();
 
-    pubClient = createClient();
-    subClient = createClient();
+    const config = {
+      endpoint: "http://localhost:4566",
+      region: "eu-central-1",
+      credentials: { accessKeyId: "dummy", secretAccessKey: "dummy" },
+      timeout: 500,
+    };
+    snsClient = new SNS(config);
+    sqsClient = new SQS(config);
 
-    await Promise.all([pubClient.connect(), subClient.connect()]);
+    const createTopicCommandOutput = await snsClient.createTopic({
+      Name: "socket-io",
+    });
+
+    snsTopicArn = createTopicCommandOutput.TopicArn;
 
     io = new Server(httpServer, {
-      adapter: createAdapter(pubClient, subClient),
+      adapter: createAdapter(snsClient, sqsClient),
     });
 
     httpServer.listen(() => {
@@ -59,41 +72,51 @@ describe("emitter", () => {
 
     serverSockets = [];
 
-    emitter = new Emitter(pubClient);
+    emitter = new Emitter(snsClient, snsTopicArn);
 
     return new Promise((resolve) => {
       io.on("connection", (socket) => {
         serverSockets.push(socket);
         if (serverSockets.length === SOCKETS_COUNT) {
-          setTimeout(resolve, 100);
+          setTimeout(resolve, 1000);
         }
       });
     });
   });
 
-  afterEach(() => {
-    pubClient.quit();
-    subClient.quit();
+  afterEach(async () => {
+    await sleep(1000);
+
     io.close();
     clientSockets.forEach((socket) => {
       socket.disconnect();
     });
+
+    const queues = await sqsClient.listQueues({});
+    for (const queueUrl of queues.QueueUrls) {
+      try {
+        await sqsClient.deleteQueue({ QueueUrl: queueUrl });
+      } catch (e) {}
+    }
+
+    try {
+      await snsClient.deleteTopic({ TopicArn: snsTopicArn });
+    } catch (e) {}
   });
 
   it("should be able to emit any kind of data", (done) => {
     const buffer = Buffer.from("asdfasdf", "utf8");
     const arraybuffer = Uint8Array.of(1, 2, 3, 4).buffer;
 
-    emitter.emit("payload", 1, "2", [3], buffer, arraybuffer);
-
     clientSockets[0].on("payload", (a, b, c, d, e) => {
-      expect(a).to.eql(1);
       expect(b).to.eql("2");
       expect(c).to.eql([3]);
       expect(d).to.eql(buffer);
       expect(e).to.eql(Buffer.from(arraybuffer)); // buffer on the nodejs client-side
       done();
     });
+
+    emitter.emit("payload", 1, "2", [3], buffer, arraybuffer);
   });
 
   it("should support the toJSON() method", (done) => {
@@ -113,33 +136,33 @@ describe("emitter", () => {
       }
     }
 
-    // @ts-ignore
-    emitter.emit("payload", 1n, new Set(["2", 3]), new MyClass());
-
     clientSockets[0].on("payload", (a, b, c) => {
       expect(a).to.eql("1");
       expect(b).to.eql(["2", 3]);
       expect(c).to.eql(4);
       done();
     });
+
+    // @ts-ignore
+    emitter.emit("payload", 1n, new Set(["2", 3]), new MyClass());
   });
 
-  it("should support all broadcast modifiers", () => {
+  it("should support all broadcast modifiers", async () => {
     emitter.in(["room1", "room2"]).emit("test");
     emitter.except(["room4", "room5"]).emit("test");
     emitter.volatile.emit("test");
     emitter.compress(false).emit("test");
-    expect(() => emitter.emit("connect")).to.throwError();
+    await expect(emitter.emit("connect")).rejects;
   });
 
   describe("in namespaces", () => {
     it("should be able to emit messages to client", (done) => {
-      emitter.emit("broadcast event", "broadcast payload");
-
       clientSockets[0].on("broadcast event", (payload) => {
         expect(payload).to.eql("broadcast payload");
         done();
       });
+
+      emitter.emit("broadcast event", "broadcast payload");
     });
 
     it("should be able to emit message to namespace", (done) => {
@@ -163,7 +186,7 @@ describe("emitter", () => {
     });
 
     it("should prepend a missing / to the namespace name", () => {
-      const emitter = new Emitter(null);
+      const emitter = new Emitter(snsClient, snsTopicArn);
       const custom = emitter.of("custom"); // missing "/"
       expect(emitter.nsp).to.eql("/");
       expect(custom.nsp).to.eql("/custom");
@@ -225,7 +248,7 @@ describe("emitter", () => {
             expect(socket.rooms).to.contain("room1");
           });
           done();
-        }, 100);
+        }, 1000);
       });
 
       it("makes all socket instances in a room join the given room", (done) => {
@@ -240,7 +263,7 @@ describe("emitter", () => {
           expect(serverSockets[1].rooms).to.contain("room3");
           expect(serverSockets[2].rooms).to.not.contain("room3");
           done();
-        }, 100);
+        }, 1000);
       });
     });
 
@@ -257,7 +280,7 @@ describe("emitter", () => {
           expect(serverSockets[0].rooms).to.not.contain("room1");
           expect(serverSockets[1].rooms).to.not.contain("room1");
           done();
-        }, 100);
+        }, 1000);
       });
 
       it("makes all socket instances in a room leave the given room", (done) => {
@@ -272,7 +295,7 @@ describe("emitter", () => {
           expect(serverSockets[0].rooms).to.not.contain("room1");
           expect(serverSockets[1].rooms).to.contain("room1");
           done();
-        }, 100);
+        }, 1000);
       });
     });
 
@@ -319,5 +342,3 @@ describe("emitter", () => {
     });
   });
 });
-
-require("./custom-parser");

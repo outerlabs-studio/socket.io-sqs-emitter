@@ -20,3 +20,9 @@ Assertion.prototype.contain = function (...args) {
   }
   return contain.apply(this, args);
 };
+
+export function sleep(ms: number) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}

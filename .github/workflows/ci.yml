@@ -14,24 +14,16 @@ jobs:
       matrix:
         node-version: [12.x, 16.x]
 
-    services:
-      redis:
-        image: redis
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 6379:6379
-
     steps:
       - uses: actions/checkout@v2
       - name: Use Node.js ${{ matrix.node-version }}
         uses: actions/setup-node@v1
         with:
           node-version: ${{ matrix.node-version }}
-      - run: npm ci
-      - run: npm test
-        env:
-          CI: true
+      - name: Start LocalStack
+        uses: LocalStack/setup-localstack@v0.2.0
+        with:
+          image-tag: 'latest'
+          install-awslocal: 'true'
+      - run: npm run format:check
+      - run: npm run test
