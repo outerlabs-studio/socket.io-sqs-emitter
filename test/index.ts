@@ -93,7 +93,7 @@ describe("emitter", () => {
     });
 
     const queues = await sqsClient.listQueues({});
-    for (const queueUrl of queues.QueueUrls) {
+    for (const queueUrl of queues?.QueueUrls || []) {
       try {
         await sqsClient.deleteQueue({ QueueUrl: queueUrl });
       } catch (e) {}
