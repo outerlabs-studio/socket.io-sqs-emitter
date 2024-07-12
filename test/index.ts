@@ -16,7 +16,7 @@ const SOCKETS_COUNT = 3;
 const createPartialDone = (
   count: number,
   done: () => void,
-  callback?: () => void
+  callback?: () => void,
 ) => {
   let i = 0;
   return () => {

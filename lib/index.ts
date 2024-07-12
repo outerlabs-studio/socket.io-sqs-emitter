@@ -56,7 +56,7 @@ async function publish(
   type: number,
   nsp: string | undefined,
   uid: string | undefined,
-  data?: any
+  data?: any,
 ) {
   try {
     const messageAttributes: Record<string, MessageAttributeValue> = {};
@@ -88,7 +88,7 @@ async function publish(
           TopicArn: topic,
           Message: String(type),
           MessageAttributes: messageAttributes,
-        })
+        }),
       )
       .then(() => {
         debug("published message %d to SNS topic %s", type, topic);
@@ -106,7 +106,7 @@ export class Emitter<EmitEvents extends EventsMap = DefaultEventsMap> {
   constructor(
     readonly snsClient: SNS,
     readonly topicArn: string,
-    readonly nsp: string = "/"
+    readonly nsp: string = "/",
   ) {
     this.broadcastOptions = {
       nsp,
@@ -124,7 +124,7 @@ export class Emitter<EmitEvents extends EventsMap = DefaultEventsMap> {
     return new Emitter(
       this.snsClient,
       this.topicArn,
-      (nsp[0] !== "/" ? "/" : "") + nsp
+      (nsp[0] !== "/" ? "/" : "") + nsp,
     );
   }
 
@@ -140,7 +140,7 @@ export class Emitter<EmitEvents extends EventsMap = DefaultEventsMap> {
   ): Promise<true> {
     return new BroadcastOperator<EmitEvents>(
       this.snsClient,
-      this.broadcastOptions
+      this.broadcastOptions,
     ).emit(ev, ...args);
   }
 
@@ -153,7 +153,7 @@ export class Emitter<EmitEvents extends EventsMap = DefaultEventsMap> {
    */
   public to(room: string | string[]): BroadcastOperator<EmitEvents> {
     return new BroadcastOperator(this.snsClient, this.broadcastOptions).to(
-      room
+      room,
     );
   }
 
@@ -166,7 +166,7 @@ export class Emitter<EmitEvents extends EventsMap = DefaultEventsMap> {
    */
   public in(room: string | string[]): BroadcastOperator<EmitEvents> {
     return new BroadcastOperator(this.snsClient, this.broadcastOptions).in(
-      room
+      room,
     );
   }
 
@@ -179,7 +179,7 @@ export class Emitter<EmitEvents extends EventsMap = DefaultEventsMap> {
    */
   public except(room: string | string[]): BroadcastOperator<EmitEvents> {
     return new BroadcastOperator(this.snsClient, this.broadcastOptions).except(
-      room
+      room,
     );
   }
 
@@ -206,7 +206,7 @@ export class Emitter<EmitEvents extends EventsMap = DefaultEventsMap> {
   public compress(compress: boolean): BroadcastOperator<EmitEvents> {
     return new BroadcastOperator(
       this.snsClient,
-      this.broadcastOptions
+      this.broadcastOptions,
     ).compress(compress);
   }
 
@@ -219,7 +219,7 @@ export class Emitter<EmitEvents extends EventsMap = DefaultEventsMap> {
   public async socketsJoin(rooms: string | string[]): Promise<void> {
     return new BroadcastOperator(
       this.snsClient,
-      this.broadcastOptions
+      this.broadcastOptions,
     ).socketsJoin(rooms);
   }
 
@@ -232,7 +232,7 @@ export class Emitter<EmitEvents extends EventsMap = DefaultEventsMap> {
   public async socketsLeave(rooms: string | string[]): Promise<void> {
     return new BroadcastOperator(
       this.snsClient,
-      this.broadcastOptions
+      this.broadcastOptions,
     ).socketsLeave(rooms);
   }
 
@@ -245,7 +245,7 @@ export class Emitter<EmitEvents extends EventsMap = DefaultEventsMap> {
   public async disconnectSockets(close: boolean = false): Promise<void> {
     return new BroadcastOperator(
       this.snsClient,
-      this.broadcastOptions
+      this.broadcastOptions,
     ).disconnectSockets(close);
   }
 
@@ -269,7 +269,7 @@ export class Emitter<EmitEvents extends EventsMap = DefaultEventsMap> {
       UID,
       {
         packet: args,
-      }
+      },
     );
   }
 }
@@ -289,7 +289,7 @@ export class BroadcastOperator<EmitEvents extends EventsMap> {
     private readonly broadcastOptions: BroadcastOptions,
     private readonly rooms: Set<string> = new Set<string>(),
     private readonly exceptRooms: Set<string> = new Set<string>(),
-    private readonly flags: BroadcastFlags = {}
+    private readonly flags: BroadcastFlags = {},
   ) {}
 
   /**
@@ -312,7 +312,7 @@ export class BroadcastOperator<EmitEvents extends EventsMap> {
       this.broadcastOptions,
       rooms,
       this.exceptRooms,
-      this.flags
+      this.flags,
     );
   }
 
@@ -346,7 +346,7 @@ export class BroadcastOperator<EmitEvents extends EventsMap> {
       this.broadcastOptions,
       this.rooms,
       exceptRooms,
-      this.flags
+      this.flags,
     );
   }
 
@@ -364,7 +364,7 @@ export class BroadcastOperator<EmitEvents extends EventsMap> {
       this.broadcastOptions,
       this.rooms,
       this.exceptRooms,
-      flags
+      flags,
     );
   }
 
@@ -383,7 +383,7 @@ export class BroadcastOperator<EmitEvents extends EventsMap> {
       this.broadcastOptions,
       this.rooms,
       this.exceptRooms,
-      flags
+      flags,
     );
   }
 
@@ -424,7 +424,7 @@ export class BroadcastOperator<EmitEvents extends EventsMap> {
       {
         packet,
         opts,
-      }
+      },
     );
 
     return true;
@@ -449,7 +449,7 @@ export class BroadcastOperator<EmitEvents extends EventsMap> {
           except: [...this.exceptRooms],
         },
         rooms: Array.isArray(rooms) ? rooms : [rooms],
-      }
+      },
     );
   }
 
@@ -472,7 +472,7 @@ export class BroadcastOperator<EmitEvents extends EventsMap> {
           except: [...this.exceptRooms],
         },
         rooms: Array.isArray(rooms) ? rooms : [rooms],
-      }
+      },
     );
   }
 
@@ -495,7 +495,7 @@ export class BroadcastOperator<EmitEvents extends EventsMap> {
           except: [...this.exceptRooms],
         },
         close,
-      }
+      },
     );
   }
 }

@@ -13,7 +13,7 @@ Assertion.prototype.contain = function (...args) {
         },
         function () {
           return "expected " + i(this.obj) + " to not contain " + i(obj);
-        }
+        },
       );
     });
     return this;

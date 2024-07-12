@@ -22,7 +22,7 @@ export type EventNames<Map extends EventsMap> = keyof Map & (string | symbol);
 /** The tuple type representing the parameters of an event listener */
 export type EventParams<
   Map extends EventsMap,
-  Ev extends EventNames<Map>
+  Ev extends EventNames<Map>,
 > = Parameters<Map[Ev]>;
 
 /**
